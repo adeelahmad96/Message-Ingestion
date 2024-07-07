@@ -1,0 +1,112 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  VerifyTokenFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.verifyToken
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: <Your_S3_Bucket>
+        S3Key: path/to/your/index.zip
+      Runtime: nodejs18.x
+      Environment:
+        Variables:
+          VERIFY_TOKEN: <YOUR_VERIFY_TOKEN>
+  
+  AuthenticatePayloadFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.authenticatePayload
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: <Your_S3_Bucket>
+        S3Key: path/to/your/index.zip
+      Runtime: nodejs18.x
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref AuthenticatedMessagesQueue
+  
+  AuthenticatedMessagesQueue:
+    Type: 'AWS::SQS::Queue'
+  
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaSQSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:SendMessage'
+                Resource: '*'
+
+  ApiGateway:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: 'WhatsAppWebhookAPI'
+  
+  ApiGatewayResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: 'whatsapp'
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayMethodGet:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: 'NONE'
+      HttpMethod: 'GET'
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        IntegrationHttpMethod: 'POST'
+        Type: 'AWS_PROXY'
+        Uri: 
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VerifyTokenFunction.Arn}/invocations
+
+  ApiGatewayMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: 'NONE'
+      HttpMethod: 'POST'
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        IntegrationHttpMethod: 'POST'
+        Type: 'AWS_PROXY'
+        Uri: 
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthenticatePayloadFunction.Arn}/invocations
+
+  LambdaPermissionGet:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref VerifyTokenFunction
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: 
+        Fn::Sub: arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/GET/whatsapp
+
+  LambdaPermissionPost:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref AuthenticatePayloadFunction
+      Principal: 'apigateway.amazonaws.com'
+      SourceArn: 
+        Fn::Sub: arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/POST/whatsapp
+
+Outputs:
+  ApiUrl:
+    Description: 'API Gateway endpoint URL'
+    Value: 
+      Fn::Sub: https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/whatsapp
